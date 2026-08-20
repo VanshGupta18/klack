@@ -24,7 +24,20 @@ final class SoundEngine {
     // mark a node idle out from under whatever new buffer is actually playing on it now.
     private var generation: [Int] = []
 
-    private var buffersByCategory: [KeySoundCategory: [AVAudioPCMBuffer]] = [:]
+    // Every theme is preloaded up front — themes are small (tens of short clips each),
+    // so keeping all of them in memory at once means switching is instant with zero
+    // runtime file I/O, instead of needing a "reload on switch" mechanism.
+    private var buffersByTheme: [String: [KeySoundCategory: [AVAudioPCMBuffer]]] = [:]
+
+    /// Theme names are just the subfolder names under Resources/Sounds/ — discovered at
+    /// launch, so adding a new theme later is "drop a folder in," no code change needed.
+    let availableThemes: [String]
+
+    private static let themeDefaultsKey = "soundTheme"
+
+    var currentTheme: String {
+        didSet { UserDefaults.standard.set(currentTheme, forKey: Self.themeDefaultsKey) }
+    }
 
     var outputVolume: Float {
         get { engine.mainMixerNode.outputVolume }
@@ -32,10 +45,10 @@ final class SoundEngine {
     }
 
     /// Diagnostic only (used by `--verify-sounds`): how many samples were actually
-    /// found and decoded per category, so a broken bundle path or a bad audio file
-    /// shows up as "0 loaded" instead of silent no-op playback.
+    /// found and decoded per category in the CURRENT theme, so a broken bundle path or
+    /// a bad audio file shows up as "0 loaded" instead of silent no-op playback.
     var loadedSampleCounts: [KeySoundCategory: Int] {
-        buffersByCategory.mapValues(\.count)
+        (buffersByTheme[currentTheme] ?? [:]).mapValues(\.count)
     }
 
     init(poolSize: Int = 8) {
@@ -43,7 +56,11 @@ final class SoundEngine {
         // been loaded yet — connecting nodes against it (rather than a preloaded buffer's
         // format) means the graph is always valid, even with empty sound folders.
         outputFormat = engine.outputNode.inputFormat(forBus: 0)
-        preloadBuffers()
+
+        let discovered = Self.discoverThemes()
+        availableThemes = discovered
+        let saved = UserDefaults.standard.string(forKey: Self.themeDefaultsKey)
+        currentTheme = (saved.flatMap { discovered.contains($0) ? $0 : nil }) ?? discovered.first ?? "default"
 
         for _ in 0..<poolSize {
             let node = AVAudioPlayerNode()
@@ -61,6 +78,8 @@ final class SoundEngine {
 
         startEngine()
         for node in nodes { node.play() }
+
+        preloadAllThemes(discovered)
     }
 
     private func startEngine() {
@@ -77,27 +96,48 @@ final class SoundEngine {
         startEngine()
     }
 
-    private func preloadBuffers() {
+    private static func discoverThemes() -> [String] {
+        guard let soundsRoot = Bundle.main.resourceURL?.appendingPathComponent("Sounds") else { return [] }
         let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(
+            at: soundsRoot, includingPropertiesForKeys: [.isDirectoryKey]
+        ) else { return [] }
+
+        return entries
+            .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true }
+            .map { $0.lastPathComponent }
+            .sorted()
+    }
+
+    private func preloadAllThemes(_ themes: [String]) {
         guard let soundsRoot = Bundle.main.resourceURL?.appendingPathComponent("Sounds") else { return }
+        let fm = FileManager.default
 
-        for category in KeySoundCategory.allCases {
-            let dir = soundsRoot.appendingPathComponent(category.rawValue)
-            guard let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { continue }
+        for theme in themes {
+            let themeRoot = soundsRoot.appendingPathComponent(theme)
+            var byCategory: [KeySoundCategory: [AVAudioPCMBuffer]] = [:]
 
-            var buffers: [AVAudioPCMBuffer] = []
-            for url in files {
-                guard let file = try? AVAudioFile(forReading: url) else { continue }
-                guard let raw = AVAudioPCMBuffer(
-                    pcmFormat: file.processingFormat,
-                    frameCapacity: AVAudioFrameCount(file.length)
-                ) else { continue }
-                guard (try? file.read(into: raw)) != nil else { continue }
-                guard let converted = convert(raw, to: outputFormat) else { continue }
-                buffers.append(converted)
+            for category in KeySoundCategory.allCases {
+                let dir = themeRoot.appendingPathComponent(category.rawValue)
+                guard let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { continue }
+
+                var buffers: [AVAudioPCMBuffer] = []
+                for url in files {
+                    guard let file = try? AVAudioFile(forReading: url) else { continue }
+                    guard let raw = AVAudioPCMBuffer(
+                        pcmFormat: file.processingFormat,
+                        frameCapacity: AVAudioFrameCount(file.length)
+                    ) else { continue }
+                    guard (try? file.read(into: raw)) != nil else { continue }
+                    guard let converted = convert(raw, to: outputFormat) else { continue }
+                    buffers.append(converted)
+                }
+                if !buffers.isEmpty {
+                    byCategory[category] = buffers
+                }
             }
-            if !buffers.isEmpty {
-                buffersByCategory[category] = buffers
+            if !byCategory.isEmpty {
+                buffersByTheme[theme] = byCategory
             }
         }
     }
@@ -128,10 +168,12 @@ final class SoundEngine {
     }
 
     /// The entire per-keystroke hot path: pick a random sample, grab an idle node, schedule it.
-    /// Falls back to `.alphanumeric` (the largest, most generic bucket) for `.other` keys
-    /// (Tab, Escape, arrows, F-keys, ...) or any category whose folder is empty/missing.
+    /// Falls back to `.alphanumeric` (the largest, most generic bucket) within the current
+    /// theme for `.other` keys (Tab, Escape, arrows, F-keys, ...) or any category whose
+    /// folder is empty/missing.
     func play(_ category: KeySoundCategory) {
-        guard let buffers = buffersByCategory[category] ?? buffersByCategory[.alphanumeric], !buffers.isEmpty else { return }
+        let themeBuffers = buffersByTheme[currentTheme] ?? [:]
+        guard let buffers = themeBuffers[category] ?? themeBuffers[.alphanumeric], !buffers.isEmpty else { return }
         let buffer = buffers[Int.random(in: 0..<buffers.count)]
 
         let index = nextNodeIndex(playing: playing, cursor: cursor)

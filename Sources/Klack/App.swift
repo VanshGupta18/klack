@@ -50,17 +50,23 @@ enum KlackMain {
         }
         if CommandLine.arguments.contains("--verify-sounds") {
             let engine = SoundEngine()
-            let counts = engine.loadedSampleCounts
-            for category in KeySoundCategory.allCases {
-                print("\(category.rawValue): \(counts[category] ?? 0) sample(s) loaded")
-            }
-            print("Scheduling one playback per category (including fallback-to-alphanumeric ones)...")
-            for category in KeySoundCategory.allCases {
-                engine.play(category)
+            print("Themes found: \(engine.availableThemes)")
+            var totalLoaded = 0
+            for theme in engine.availableThemes {
+                engine.currentTheme = theme
+                let counts = engine.loadedSampleCounts
+                print("--- \(theme) ---")
+                for category in KeySoundCategory.allCases {
+                    print("  \(category.rawValue): \(counts[category] ?? 0) sample(s) loaded")
+                }
+                totalLoaded += counts.values.reduce(0, +)
+                for category in KeySoundCategory.allCases {
+                    engine.play(category)
+                }
             }
             Thread.sleep(forTimeInterval: 1.0)
             print("Playback scheduled with no crash.")
-            exit(counts.values.reduce(0, +) > 0 ? 0 : 1)
+            exit(totalLoaded > 0 ? 0 : 1)
         }
         let app = NSApplication.shared
         app.delegate = delegate
