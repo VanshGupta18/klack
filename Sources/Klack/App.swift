@@ -6,8 +6,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusMenu: StatusMenu!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Nothing else stops two copies running at once (e.g. double-clicking again
+        // when the menu bar icon isn't immediately visible) — each would independently
+        // capture and play every keystroke, sounding like overlapping/mismatched audio.
+        let bundleID = Bundle.main.bundleIdentifier ?? "dev.vansh.klack"
+        let others = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+            .filter { $0 != .current }
+        if let other = others.first {
+            NSLog("Klack: another instance is already running (pid \(other.processIdentifier)) — exiting")
+            exit(0)
+        }
+
         // Fire-and-forget: if not yet granted, KeyTap's health-check timer picks up
         // the permission a few seconds after the user grants it, no relaunch needed.
+        NSLog("Klack: Input Monitoring already granted at launch: \(CGPreflightListenEventAccess())")
         CGRequestListenEventAccess()
 
         soundEngine = SoundEngine()
@@ -35,6 +47,20 @@ enum KlackMain {
     static func main() {
         if CommandLine.arguments.contains("--self-check") {
             exit(runSelfChecks() ? 0 : 1)
+        }
+        if CommandLine.arguments.contains("--verify-sounds") {
+            let engine = SoundEngine()
+            let counts = engine.loadedSampleCounts
+            for category in KeySoundCategory.allCases {
+                print("\(category.rawValue): \(counts[category] ?? 0) sample(s) loaded")
+            }
+            print("Scheduling one playback per category (including fallback-to-alphanumeric ones)...")
+            for category in KeySoundCategory.allCases {
+                engine.play(category)
+            }
+            Thread.sleep(forTimeInterval: 1.0)
+            print("Playback scheduled with no crash.")
+            exit(counts.values.reduce(0, +) > 0 ? 0 : 1)
         }
         let app = NSApplication.shared
         app.delegate = delegate

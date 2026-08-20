@@ -39,13 +39,17 @@ final class KeyTap {
                 return tap.handle(type: type, event: event)
             },
             userInfo: refcon
-        ) else { return }
+        ) else {
+            NSLog("Klack: CGEventTapCreate failed (Input Monitoring not granted yet?) — will retry")
+            return
+        }
 
         port = newPort
         let source = CFMachPortCreateRunLoopSource(nil, newPort, 0)
         runLoopSource = source
         CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
         CGEvent.tapEnable(tap: newPort, enable: true)
+        NSLog("Klack: key tap created and enabled")
     }
 
     private func checkHealth() {

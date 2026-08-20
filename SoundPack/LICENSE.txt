@@ -1,0 +1,8 @@
+All audio files under Resources/Sounds/ and SoundPack/raw/ are dedicated to
+the public domain under the Creative Commons CC0 1.0 Universal license.
+
+Full legal text: https://creativecommons.org/publicdomain/zero/1.0/legalcode
+
+No attribution is required to use, modify, or redistribute these files.
+Per-file source/author provenance is kept anyway in README-source.txt as
+good practice.
